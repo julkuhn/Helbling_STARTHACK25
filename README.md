@@ -32,6 +32,8 @@
     - Labelling of different voices. (10%)
     - Extraction and storing of conversational information “memories” per voice. (10%)
     - Injection of memories into conversation for emotional and informational enhancement of conversation. (10%)
+          - ECPEC (Emotion-Cause Pair Extraction in Conversations)
+          - ...
     - Safety & Privacy of stored information. (5%)
 - Presentation (20%)
 - Performance (20%)

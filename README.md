@@ -22,7 +22,7 @@
 * Memory handling to remember and inject past conversational details
 
 ## Challenge Topics
-- Quality (50)
+- Quality (50 %)
   - The quality of the solution is key. The main voice does not have to be completely isolated, but it should work well in the speech to text process. We identify different tasks:
     - Isolation of the main voice over background noise and voices. (15%)
          - Using VAD with Whisper allows for better focus on a single speaker.

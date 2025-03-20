@@ -1,6 +1,11 @@
 import uuid
 import json
 import os
+import io
+import torch
+import torchaudio
+import soundfile as sf
+import numpy as np
 
 from flask import Flask, request, jsonify
 import azure.cognitiveservices.speech as speechsdk
@@ -9,7 +14,8 @@ from flask_cors import CORS
 from flasgger import Swagger
 
 from openai import OpenAI
-import io
+from vap.modules.lightning_module import VAPModule
+
 
 AZURE_SPEECH_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
 AZURE_SPEECH_REGION = "switzerlandnorth"
@@ -23,94 +29,79 @@ swagger = Swagger(app)
 
 sessions = {}
 
+# Load VAP model once at startup
+print("Loading VAP Model...")
+vap_model = VAPModule.load_from_checkpoint("/Users/juliakuhn/Desktop/Helbling_STARTHACK25/src/VAP/example/checkpoints/checkpoint.ckpt")
+vap_model.eval()
+print("VAP Model Loaded Successfully.")
+
+
+def isolate_voice_vap(audio_bytes):
+    """
+    Use VAP to extract the main speaker's voice and remove background noise.
+
+    Parameters:
+    - audio_bytes (bytes): The raw audio data in bytes.
+
+    Returns:
+    - bytes: Processed audio with main speaker isolated.
+    """
+    audio_buffer = io.BytesIO(audio_bytes)
+    audio, sr = sf.read(audio_buffer, dtype="float32")
+
+    # Ensure audio is stereo (VAP expects 2 channels)
+    if len(audio.shape) == 1:
+        audio = np.stack([audio, audio], axis=0)  # Convert mono to stereo
+
+    # Convert to PyTorch tensor & add batch dimension
+    audio_tensor = torch.tensor(audio).unsqueeze(0)  # Shape: (1, 2, samples)
+
+    print(f"Debug: Input audio shape for VAP: {audio_tensor.shape}")  # Should be (1, 2, N)
+
+    # Run through VAP model to predict voice activity
+    with torch.no_grad():
+        predictions = vap_model(audio_tensor)  # VAP expects stereo input
+
+    # Apply thresholding to keep only main voice regions
+    threshold = 0.6  
+    speech_mask = predictions.squeeze(0) > threshold
+    enhanced_audio = audio[:, speech_mask]  # Apply mask
+
+    # Convert back to bytes
+    output_buffer = io.BytesIO()
+    sf.write(output_buffer, enhanced_audio.T, sr, format="wav")
+
+    return output_buffer.getvalue()
+
+
 def transcribe_whisper(audio_recording):
+    """
+    Transcribes speech from audio using OpenAI Whisper.
+
+    Parameters:
+    - audio_recording (bytes): Processed audio data.
+
+    Returns:
+    - str: Transcription of the audio.
+    """
     audio_file = io.BytesIO(audio_recording)
-    audio_file.name = 'audio.wav'  # Whisper requires a filename with a valid extension
+    audio_file.name = "audio.wav"
+
     transcription = client.audio.transcriptions.create(
         model="whisper-1",
         file=audio_file,
-        #language = ""  # specify Language explicitly
     )
-    print(f"openai transcription: {transcription.text}")
-    return transcription.text
     
-# def transcribe_preview(session):
-#     if session["audio_buffer"] is not None:
-#         text = transcribe_whisper(session["audio_buffer"])
-#         # send transcription
-#         ws = session.get("websocket")
-#         if ws:
-#             message = {
-#                 "event": "recognizing",
-#                 "text": text,
-#                 "language": session["language"]
-#             }
-#             ws.send(json.dumps(message))
-
-@app.route("/chats/<chat_session_id>/sessions", methods=["POST"])
-def open_session(chat_session_id):
-    """
-    Open a new voice input session and start continuous recognition.
-    ---
-    tags:
-      - Sessions
-    parameters:
-      - name: chat_session_id
-        in: path
-        type: string
-        required: true
-        description: ID of the chat session
-      - name: body
-        in: body
-        required: true
-        schema:
-          type: object
-          required:
-            - language
-          properties:
-            language:
-              type: string
-              description: Language code for speech recognition (e.g., en-US)
-    responses:
-      200:
-        description: Session created successfully
-        schema:
-          type: object
-          properties:
-            session_id:
-              type: string
-              description: Unique identifier for the voice recognition session
-      400:
-        description: Language parameter missing
-        schema:
-          type: object
-          properties:
-            error:
-              type: string
-              description: Description of the error
-    """
-    session_id = str(uuid.uuid4())
-
-    body = request.get_json()
-    if "language" not in body:
-        return jsonify({"error": "Language not specified"}), 400
-    language = body["language"]
-
-    sessions[session_id] = {
-        "audio_buffer": None,
-        "chatSessionId": chat_session_id,
-        "language": language,
-        "websocket": None  # will be set when the client connects via WS
-    }
-
-    return jsonify({"session_id": session_id})
+    print(f"Transcription: {transcription.text}")
+    return transcription.text
 
 
 @app.route("/chats/<chat_session_id>/sessions/<session_id>/wav", methods=["POST"])
 def upload_audio_chunk(chat_session_id, session_id):
     """
     Upload an audio chunk (expected 16kb, ~0.5s of WAV data).
-    The chunk is appended to the push stream for the session.
+    The chunk is processed with VAP for voice isolation.
+
     ---
     tags:
       - Sessions
@@ -134,33 +125,21 @@ def upload_audio_chunk(chat_session_id, session_id):
           description: Raw WAV audio data
     responses:
       200:
-        description: Audio chunk received successfully
-        schema:
-          type: object
-          properties:
-            status:
-              type: string
-              description: Status message
-      404:
-        description: Session not found
-        schema:
-          type: object
-          properties:
-            error:
-              type: string
-              description: Description of the error
+        description: Audio chunk processed successfully
     """
     if session_id not in sessions:
         return jsonify({"error": "Session not found"}), 404
 
-    audio_data = request.get_data()  # raw binary data from the POST body
+    audio_data = request.get_data()
 
+    # Apply VAP-based voice isolation
+    clean_audio = isolate_voice_vap(audio_data)
+
+    # Store processed audio in session buffer
     if sessions[session_id]["audio_buffer"] is not None:
-        sessions[session_id]["audio_buffer"] = sessions[session_id]["audio_buffer"] + audio_data
+        sessions[session_id]["audio_buffer"] += clean_audio
     else:
-        sessions[session_id]["audio_buffer"] = audio_data
-
-    # TODO optionally transcribe real time audio chunks, see transcribe_preview()
+        sessions[session_id]["audio_buffer"] = clean_audio
 
     return jsonify({"status": "audio_chunk_received"})
 
@@ -168,8 +147,8 @@ def upload_audio_chunk(chat_session_id, session_id):
 @app.route("/chats/<chat_session_id>/sessions/<session_id>", methods=["DELETE"])
 def close_session(chat_session_id, session_id):
     """
-    Close the session (stop recognition, close push stream, cleanup).
-    
+    Close the session (stop recognition, process audio, and transcribe speech).
+
     ---
     tags:
       - Sessions
@@ -187,92 +166,31 @@ def close_session(chat_session_id, session_id):
     responses:
       200:
         description: Session successfully closed
-        schema:
-          type: object
-          properties:
-            status:
-              type: string
-              example: session_closed
-      404:
-        description: Session not found
-        schema:
-          type: object
-          properties:
-            error:
-              type: string
-              example: Session not found
     """
     if session_id not in sessions:
         return jsonify({"error": "Session not found"}), 404
 
     if sessions[session_id]["audio_buffer"] is not None:
-        # TODO preprocess audio/text, extract and save speaker identification
+        # Apply VAP before Whisper transcription
+        clean_audio = isolate_voice_vap(sessions[session_id]["audio_buffer"])
 
-        text = transcribe_whisper(sessions[session_id]["audio_buffer"])
-        # send transcription
+        # Transcribe with Whisper
+        text = transcribe_whisper(clean_audio)
+
         ws = sessions[session_id].get("websocket")
         if ws:
-          message = {
-              "event": "recognized",
-              "text": text,
-              "language": sessions[session_id]["language"]
-          }
-          ws.send(json.dumps(message))
-    
-    # # Remove from session store
-    sessions.pop(session_id, None)
+            message = {"event": "recognized", "text": text, "language": sessions[session_id]["language"]}
+            ws.send(json.dumps(message))
 
+    # Remove session
+    sessions.pop(session_id, None)
     return jsonify({"status": "session_closed"})
 
-
-@sock.route("/ws/chats/<chat_session_id>/sessions/<session_id>")
-def speech_socket(ws, chat_session_id, session_id):
-    """
-    WebSocket endpoint for clients to receive STT results.
-
-    This WebSocket allows clients to connect and receive speech-to-text (STT) results
-    in real time. The connection is maintained until the client disconnects. If the 
-    session ID is invalid, an error message is sent, and the connection is closed.
-
-    ---
-    tags:
-      - Sessions
-    parameters:
-      - name: chat_session_id
-        in: path
-        type: string
-        required: true
-        description: The unique identifier for the chat session.
-      - name: session_id
-        in: path
-        type: string
-        required: true
-        description: The unique identifier for the speech session.
-    responses:
-      400:
-        description: Session not found.
-      101:
-        description: WebSocket connection established.
-    """
-    if session_id not in sessions:
-        ws.send(json.dumps({"error": "Session not found"}))
-        return
-
-    # Store the websocket reference in the session
-    sessions[session_id]["websocket"] = ws
-
-    # Keep the socket open to send events
-    # Typically we'd read messages from the client in a loop if needed
-    while True:
-        # If the client closes the socket, an exception is thrown or `ws.receive()` returns None
-        msg = ws.receive()
-        if msg is None:
-            break
 
 @app.route('/chats/<chat_session_id>/set-memories', methods=['POST'])
 def set_memories(chat_session_id):
     """
-    Set memories for a specific chat session.
+    Stores memories for a chat session.
 
     ---
     tags:
@@ -297,32 +215,24 @@ def set_memories(chat_session_id):
                   text:
                     type: string
                     description: The chat message text.
-              description: List of chat messages in the session.
     responses:
       200:
         description: Memory set successfully.
-        schema:
-          type: object
-          properties:
-            success:
-              type: string
-              example: "1"
-      400:
-        description: Invalid request data.
     """
     chat_history = request.get_json()
-    
-    # TODO preprocess data (chat history & system message)
-    
-    print(f"{chat_session_id} extracting memories for conversation a:{chat_history[-1]['text']}")
 
+    if not isinstance(chat_history, list) or len(chat_history) == 0:
+        return jsonify({"error": "Invalid chat history format"}), 400
+
+    print(f"Memory stored: {chat_history[-1]['text']}")
     return jsonify({"success": "1"})
 
 
 @app.route('/chats/<chat_session_id>/get-memories', methods=['GET'])
 def get_memories(chat_session_id):
     """
-    Retrieve stored memories for a specific chat session.
+    Retrieves stored memories.
+
     ---
     tags:
       - Memories
@@ -335,24 +245,11 @@ def get_memories(chat_session_id):
     responses:
       200:
         description: Successfully retrieved memories for the chat session.
-        schema:
-          type: object
-          properties:
-            memories:
-              type: string
-              description: The stored memories for the chat session.
-      400:
-        description: Invalid chat session ID.
-      404:
-        description: Chat session not found.
     """
-    print(f"{chat_session_id}: replacing memories...")
-
-    # TODO load relevant memories from your database. Example return value:
+    print(f"Retrieving memories for session {chat_session_id}")
     return jsonify({"memories": "The guest typically orders menu 1 and a glass of sparkling water."})
 
 
 if __name__ == "__main__":
-    # In production, you would use a real WSGI server like gunicorn/uwsgi
+    print("Starting Flask API...")
     app.run(debug=True, host="0.0.0.0", port=5000)
-    

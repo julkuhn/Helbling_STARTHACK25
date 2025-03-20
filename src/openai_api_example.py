@@ -16,5 +16,3 @@ data = {
 response = requests.post(URL, headers=headers, json=data)
 
 print(response.json())
-
-check text 

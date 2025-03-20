@@ -2,7 +2,7 @@ import uuid
 import json
 import os
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect
 import azure.cognitiveservices.speech as speechsdk
 from flask_sock import Sock
 from flask_cors import CORS
@@ -22,6 +22,10 @@ cors = CORS(app)
 swagger = Swagger(app)
 
 sessions = {}
+
+@app.route('/')
+def home():
+    return redirect('/apidocs')
 
 def transcribe_whisper(audio_recording):
     audio_file = io.BytesIO(audio_recording)

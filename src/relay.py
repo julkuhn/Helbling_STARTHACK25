@@ -5,17 +5,20 @@ import io
 import torch
 import torchaudio
 import soundfile as sf
-import numpy as np
+import numpy as np 
 
-from flask import Flask, request, jsonify
+
+from flask import Flask, request, jsonify, redirect 
 import azure.cognitiveservices.speech as speechsdk
 from flask_sock import Sock
 from flask_cors import CORS
 from flasgger import Swagger
 
-from openai import OpenAI
+from openai import OpenAI 
+import io
+import openai
 from vap.modules.lightning_module import VAPModule
-
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 AZURE_SPEECH_KEY = "See https://starthack.eu/#/case-details?id=21, Case Description"
 AZURE_SPEECH_REGION = "switzerlandnorth"
@@ -73,6 +76,10 @@ def isolate_voice_vap(audio_bytes):
 
     return output_buffer.getvalue()
 
+
+@app.route('/')
+def home():
+    return redirect('/apidocs') 
 
 def transcribe_whisper(audio_recording):
     """

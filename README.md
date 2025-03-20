@@ -25,9 +25,15 @@
 - Quality (50%)
   - The quality of the solution is key. The main voice does not have to be completely isolated, but it should work well in the speech to text process. We identify different tasks:
     - Isolation of the main voice over background noise and voices. (15%)
+         - Using VAD with Whisper allows for better focus on a single speaker.
+         - DeepFilterNet for Noise Suppression
+         - RNNoise as lighter solution
+         - 
     - Labelling of different voices. (10%)
     - Extraction and storing of conversational information “memories” per voice. (10%)
     - Injection of memories into conversation for emotional and informational enhancement of conversation. (10%)
+          - ECPEC (Emotion-Cause Pair Extraction in Conversations)
+          - ...
     - Safety & Privacy of stored information. (5%)
 - Presentation (20%)
 - Performance (20%)

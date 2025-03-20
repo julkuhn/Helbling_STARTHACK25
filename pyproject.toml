@@ -4,6 +4,7 @@ version = "0.1.0"
 description = ""
 authors = ["Pascal Berger <pascal.berger@helbling.ch>"]
 readme = "README.md"
+packages = [{include = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.12"
@@ -14,6 +15,7 @@ flask-sock = "^0.7.0"
 flask-cors = "^5.0.0"
 flasgger = "^0.9.7.1"
 openai = "^1.65.4"
+vap = {git = "https://github.com/ErikEkstedt/VAP.git"}
 
 
 [build-system]
